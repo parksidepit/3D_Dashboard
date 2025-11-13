@@ -9,6 +9,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-treemap@2.3.0/dist/chartjs-chart-treemap.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-geo@4"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         @import url('https://rsms.me/inter/inter.css');
@@ -155,7 +157,64 @@
         #geoMapChart {
             filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1));
         }
-        
+
+        #geoMapContainer {
+            position: relative;
+        }
+
+        #geoMapContainer .leaflet-container {
+            width: 100%;
+            height: 100%;
+            border-radius: 16px;
+            box-shadow: 0 15px 45px rgba(15, 23, 42, 0.18);
+        }
+
+        .leaflet-control-container .leaflet-top .leaflet-control {
+            margin-top: 1rem;
+        }
+
+        .map-legend-section {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .map-legend-scale {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+            justify-content: center;
+        }
+
+        .map-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            color: #4b5563;
+        }
+
+        .map-legend-color {
+            width: 15px;
+            height: 15px;
+            border-radius: 3px;
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+        }
+
+        .map-legend-info {
+            font-size: 0.85rem;
+            text-align: center;
+            color: #1f2937;
+            background: rgba(99, 102, 241, 0.08);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            padding: 10px 12px;
+            border-radius: 10px;
+        }
+
         .geo-info-badge {
             position: absolute;
             top: 1rem;
@@ -1545,6 +1604,10 @@
                 <select id="upsellStatusFilter" class="custom-select border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" title="Nach Upsell Status filtern">
                     <option value="all">Alle Upsell Status</option>
                 </select>
+
+                <select id="bundeslandFilter" class="custom-select border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-400" title="Nach Bundesland filtern">
+                    <option value="all">Alle Bundesländer</option>
+                </select>
             </div>
         </div>
 
@@ -1909,7 +1972,7 @@
                             <div id="geoMapContainer" style="width: 100%; flex: 1; position: relative;">
                                 <!-- SVG Deutschland-Karte wird hier eingefügt -->
                             </div>
-                            <div id="mapLegend" style="padding: 12px; display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; background: white; border-top: 1px solid #e5e7eb;">
+                            <div id="mapLegend" class="map-legend-section" style="padding: 16px 12px; background: white; border-top: 1px solid #e5e7eb;">
                                 <!-- Legende wird dynamisch befüllt -->
                             </div>
                         </div>
@@ -2240,6 +2303,50 @@
         let masterData = [];
         let filteredData = [];
         let charts = {};
+        let leafletMap = null;
+        let bundeslaenderLayer = null;
+        let hoveredBundesland = null;
+        let latestBundeslandStats = {};
+        let bundeslandLegendCache = { buckets: [], maxValue: 0 };
+        let bundeslaenderGeoJSONPromise = null;
+        const BUNDESLAND_ALIAS_MAP = {
+            'baden württemberg': 'Baden-Württemberg',
+            'baden-württemberg': 'Baden-Württemberg',
+            'baden wuerttemberg': 'Baden-Württemberg',
+            'baden-wurttemberg': 'Baden-Württemberg',
+            'nordrhein westfalen': 'Nordrhein-Westfalen',
+            'nordrhein-westfalen': 'Nordrhein-Westfalen',
+            'nordrheinwestfalen': 'Nordrhein-Westfalen',
+            'sachsen anhalt': 'Sachsen-Anhalt',
+            'sachsen-anhalt': 'Sachsen-Anhalt',
+            'mecklenburg vorpommern': 'Mecklenburg-Vorpommern',
+            'mecklenburg-vorpommern': 'Mecklenburg-Vorpommern',
+            'schleswig holstein': 'Schleswig-Holstein',
+            'schleswig-holstein': 'Schleswig-Holstein',
+            'thueringen': 'Thüringen',
+            'thuringen': 'Thüringen',
+            'freie hansestadt bremen': 'Bremen',
+            'freie hansestadt hamburg': 'Hamburg',
+            'freistaat bayern': 'Bayern',
+            'freistaat sachsen': 'Sachsen',
+            'freistaat thueringen': 'Thüringen',
+            'freistaat thuringen': 'Thüringen',
+            'land berlin': 'Berlin',
+            'land brandenburg': 'Brandenburg',
+            'land hessen': 'Hessen',
+            'land niedersachsen': 'Niedersachsen',
+            'land nordrhein westfalen': 'Nordrhein-Westfalen',
+            'land rheinland pfalz': 'Rheinland-Pfalz',
+            'land sachsen anhalt': 'Sachsen-Anhalt',
+            'land schleswig holstein': 'Schleswig-Holstein',
+            'land mecklenburg vorpommern': 'Mecklenburg-Vorpommern'
+        };
+        const ALL_BUNDESLAENDER = [
+            'Baden-Württemberg', 'Bayern', 'Berlin', 'Brandenburg', 'Bremen',
+            'Hamburg', 'Hessen', 'Mecklenburg-Vorpommern', 'Niedersachsen',
+            'Nordrhein-Westfalen', 'Rheinland-Pfalz', 'Saarland', 'Sachsen',
+            'Sachsen-Anhalt', 'Schleswig-Holstein', 'Thüringen'
+        ];
         let userName = '';
         let originalHeaders = [];
         let currentModalCustomer = null;
@@ -3089,6 +3196,11 @@
                             });
                         }
                     });
+                } else if (columnKey === 'Bundesland') {
+                    masterData.forEach(d => {
+                        const normalized = normalizeBundeslandName(d[columnKey]);
+                        if (normalized) valueSet.add(normalized);
+                    });
                 } else {
                     // Alte Logik für Single-Select-Spalten
                     masterData.forEach(d => {
@@ -3101,7 +3213,7 @@
                 if (columnKey === 'Lead Score (berechnet)') {
                     values.sort(sortLeadScores);
                 } else {
-                    values.sort();
+                    values.sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base' }));
                 }
                 
                 const filterElement = document.getElementById(elementId);
@@ -3120,6 +3232,7 @@
             populateFilter('leadStatusBerechnetFilter', 'Lead Status (berechnet)', 'Alle Lead Status (ber.)');
             populateFilter('leadFilter', 'Lead', 'Alle Leads');
             populateFilter('upsellStatusFilter', 'Upsell Status', 'Alle Upsell Status');
+            populateFilter('bundeslandFilter', 'Bundesland', 'Alle Bundesländer');
         }
 
         // --- Geo-Analyse Funktionen ---
@@ -3265,7 +3378,7 @@
         // Hilfsfunktion: PLZ zu Bundesland mappen (verbessert mit Online-Validierung)
         function getBundeslandByPLZ(plz) {
             if (!plz) return null;
-            
+
             // Bereinige die PLZ: Entferne alle nicht-numerischen Zeichen
             let cleanedPLZ = String(plz).replace(/\D/g, '').trim();
             if (!cleanedPLZ || cleanedPLZ.length < 1) return null;
@@ -3348,280 +3461,262 @@
             
             // Thüringen (98-99)
             if (firstTwo >= 98 && firstTwo <= 99) return 'Thüringen';
-            
+
             // Unbekannt (sollte nicht vorkommen bei korrekten deutschen PLZ)
             return null;
         }
+
+        function normalizeBundeslandName(name) {
+            if (!name) return '';
+            const trimmed = String(name).trim();
+            if (!trimmed) return '';
+
+            const asciiNormalized = trimmed
+                .replace(/ß/g, 'ss')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '');
+            const key = asciiNormalized
+                .toLowerCase()
+                .replace(/[^a-z\s-]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            if (BUNDESLAND_ALIAS_MAP[key]) {
+                return BUNDESLAND_ALIAS_MAP[key];
+            }
+
+            return trimmed;
+        }
+
+        function getCustomerBundesland(customer) {
+            if (!customer) return null;
+            const fromSheet = normalizeBundeslandName(customer['Bundesland']);
+            if (fromSheet) return fromSheet;
+
+            return null;
+        }
+
+        function getFeatureBundeslandName(feature) {
+            if (!feature || !feature.properties) return '';
+            const props = feature.properties;
+            return normalizeBundeslandName(
+                props.name || props.NAME_1 || props.GEN || props.krs_name || props.kreis_name || props.BEZ || ''
+            );
+        }
+
+        function getChoroplethColor(value) {
+            if (!value || value <= 0) return 'rgba(226, 232, 240, 0.8)';
+            if (value <= 5) return 'rgba(167, 139, 250, 0.65)';
+            if (value <= 10) return 'rgba(139, 92, 246, 0.75)';
+            if (value <= 20) return 'rgba(124, 58, 237, 0.85)';
+            if (value <= 50) return 'rgba(109, 40, 217, 0.9)';
+            return 'rgba(91, 33, 182, 0.95)';
+        }
+
+        function escapeHtml(value) {
+            if (value === null || value === undefined) return '';
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
         
-        // Initialisiere SVG Deutschland-Karte
+        function loadBundeslaenderGeoJSON() {
+            if (bundeslaenderGeoJSONPromise) {
+                return bundeslaenderGeoJSONPromise;
+            }
+
+            bundeslaenderGeoJSONPromise = fetch('https://unpkg.com/deutschland-geojson@3.0.1/deutschland/bundeslaender.geo.json')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Antwort des GeoJSON-Servers war nicht erfolgreich');
+                    }
+                    return response.json();
+                })
+                .catch(error => {
+                    console.error('Fehler beim Laden der Bundesländer-GeoJSON:', error);
+                    return null;
+                })
+                .then(result => {
+                    if (!result) {
+                        bundeslaenderGeoJSONPromise = null;
+                    }
+                    return result;
+                });
+
+            return bundeslaenderGeoJSONPromise;
+        }
+
         function initializeGeoMapChart() {
             const container = document.getElementById('geoMapContainer');
             if (!container) return;
-            
-            // Vereinfachte SVG-Karte von Deutschland mit Bundesländern
-            const svgMap = `
-                <svg id="germanyMap" viewBox="0 0 800 1000" style="width: 100%; height: 100%;">
-                    <g id="bundeslaender">
-                        <!-- Schleswig-Holstein -->
-                        <path id="Schleswig-Holstein" d="M 400 50 L 450 30 L 500 50 L 520 100 L 500 150 L 450 160 L 400 150 L 380 100 Z" class="bundesland" data-name="Schleswig-Holstein"/>
-                        
-                        <!-- Hamburg -->
-                        <path id="Hamburg" d="M 430 150 L 450 150 L 460 170 L 450 180 L 430 180 Z" class="bundesland" data-name="Hamburg"/>
-                        
-                        <!-- Mecklenburg-Vorpommern -->
-                        <path id="Mecklenburg-Vorpommern" d="M 500 150 L 650 140 L 680 180 L 650 220 L 500 210 L 480 180 Z" class="bundesland" data-name="Mecklenburg-Vorpommern"/>
-                        
-                        <!-- Bremen -->
-                        <path id="Bremen" d="M 380 200 L 400 200 L 405 220 L 395 230 L 380 225 Z" class="bundesland" data-name="Bremen"/>
-                        
-                        <!-- Niedersachsen -->
-                        <path id="Niedersachsen" d="M 300 180 L 480 170 L 500 210 L 480 280 L 420 300 L 350 290 L 290 260 L 280 220 Z" class="bundesland" data-name="Niedersachsen"/>
-                        
-                        <!-- Brandenburg -->
-                        <path id="Brandenburg" d="M 500 210 L 650 220 L 680 250 L 670 320 L 600 340 L 520 330 L 500 280 Z" class="bundesland" data-name="Brandenburg"/>
-                        
-                        <!-- Berlin -->
-                        <path id="Berlin" d="M 580 270 L 600 270 L 610 290 L 600 300 L 580 300 Z" class="bundesland" data-name="Berlin"/>
-                        
-                        <!-- Sachsen-Anhalt -->
-                        <path id="Sachsen-Anhalt" d="M 480 280 L 520 330 L 520 390 L 460 410 L 420 380 L 420 300 Z" class="bundesland" data-name="Sachsen-Anhalt"/>
-                        
-                        <!-- Nordrhein-Westfalen -->
-                        <path id="Nordrhein-Westfalen" d="M 220 280 L 350 290 L 380 350 L 350 420 L 280 410 L 220 360 Z" class="bundesland" data-name="Nordrhein-Westfalen"/>
-                        
-                        <!-- Sachsen -->
-                        <path id="Sachsen" d="M 520 330 L 600 340 L 630 380 L 620 430 L 560 450 L 520 430 L 520 390 Z" class="bundesland" data-name="Sachsen"/>
-                        
-                        <!-- Thüringen -->
-                        <path id="Thüringen" d="M 420 380 L 520 390 L 520 430 L 480 460 L 420 450 L 400 410 Z" class="bundesland" data-name="Thüringen"/>
-                        
-                        <!-- Hessen -->
-                        <path id="Hessen" d="M 350 420 L 420 410 L 420 480 L 380 520 L 330 510 L 310 460 Z" class="bundesland" data-name="Hessen"/>
-                        
-                        <!-- Rheinland-Pfalz -->
-                        <path id="Rheinland-Pfalz" d="M 280 460 L 330 510 L 340 570 L 290 600 L 240 570 L 230 510 Z" class="bundesland" data-name="Rheinland-Pfalz"/>
-                        
-                        <!-- Saarland -->
-                        <path id="Saarland" d="M 240 570 L 270 590 L 260 620 L 230 610 Z" class="bundesland" data-name="Saarland"/>
-                        
-                        <!-- Baden-Württemberg -->
-                        <path id="Baden-Württemberg" d="M 340 570 L 420 580 L 450 650 L 430 730 L 370 750 L 310 720 L 290 660 L 290 600 Z" class="bundesland" data-name="Baden-Württemberg"/>
-                        
-                        <!-- Bayern -->
-                        <path id="Bayern" d="M 420 480 L 520 490 L 560 550 L 580 650 L 560 780 L 500 850 L 430 860 L 370 750 L 380 680 L 420 580 L 420 520 Z" class="bundesland" data-name="Bayern"/>
-                    </g>
-                </svg>
-            `;
-            
-            container.innerHTML = svgMap;
-            
-            // Füge Styles für die Bundesländer hinzu
-            const style = document.createElement('style');
-            style.textContent = `
-                .bundesland {
-                    stroke: #ffffff;
-                    stroke-width: 2;
-                    cursor: pointer;
-                    transition: all 0.3s ease;
-                    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+
+            if (!leafletMap) {
+                container.innerHTML = '';
+                leafletMap = L.map(container, {
+                    zoomControl: true,
+                    attributionControl: false
+                }).setView([51.163, 10.447], 6);
+
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 18,
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                }).addTo(leafletMap);
+
+                setTimeout(() => {
+                    leafletMap.invalidateSize();
+                }, 150);
+            }
+
+            loadBundeslaenderGeoJSON().then(geojson => {
+                if (!geojson) {
+                    container.innerHTML = '<div class="flex items-center justify-center h-full text-sm text-red-500">Konnte Bundesländer-GeoJSON nicht laden.</div>';
+                    return;
                 }
-                .bundesland:hover {
-                    stroke: #6366f1;
-                    stroke-width: 3;
-                    filter: drop-shadow(0 4px 8px rgba(99, 102, 241, 0.3));
-                    transform: scale(1.02);
-                    transform-origin: center;
+
+                if (bundeslaenderLayer) {
+                    updateGeoMapColors();
+                    return;
                 }
-                #germanyMap {
-                    background: #f8fafc;
-                }
-            `;
-            document.head.appendChild(style);
-            
-            // Füge Click-Handler zu allen Bundesländern hinzu
-            document.querySelectorAll('.bundesland').forEach(path => {
-                path.addEventListener('click', function() {
-                    const bundeslandName = this.getAttribute('data-name');
-                    selectBundesland(bundeslandName);
-                });
-                
-                // Tooltip bei Hover
-                path.addEventListener('mouseenter', function(e) {
-                    showMapTooltip(e, this.getAttribute('data-name'));
-                });
-                
-                path.addEventListener('mousemove', function(e) {
-                    updateMapTooltip(e);
-                });
-                
-                path.addEventListener('mouseleave', function() {
-                    hideMapTooltip();
-                });
+
+                bundeslaenderLayer = L.geoJSON(geojson, {
+                    style: feature => ({
+                        weight: 1.5,
+                        color: '#ffffff',
+                        fillOpacity: 0.85,
+                        fillColor: getChoroplethColor((latestBundeslandStats[getFeatureBundeslandName(feature)] || {}).total || 0)
+                    }),
+                    onEachFeature: (feature, layer) => {
+                        const name = getFeatureBundeslandName(feature);
+                        layer.options.title = name;
+                        layer.on({
+                            mouseover: () => handleBundeslandHover(name, layer),
+                            mouseout: () => handleBundeslandOut(layer),
+                            click: () => selectBundesland(name)
+                        });
+                    }
+                }).addTo(leafletMap);
+
+                updateGeoMapColors();
             });
-            
-            // Initiale Farben setzen
+        }
+
+        function handleBundeslandHover(name, layer) {
+            hoveredBundesland = name;
+            if (layer && layer.bringToFront) {
+                layer.bringToFront();
+            }
             updateGeoMapColors();
         }
-        
-        // Tooltip für die Karte
-        let mapTooltip = null;
-        
-        function showMapTooltip(e, bundeslandName) {
-            if (!mapTooltip) {
-                mapTooltip = document.createElement('div');
-                mapTooltip.style.cssText = `
-                    position: fixed;
-                    background: rgba(0, 0, 0, 0.85);
-                    color: white;
-                    padding: 8px 12px;
-                    border-radius: 6px;
-                    font-size: 12px;
-                    pointer-events: none;
-                    z-index: 10000;
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-                `;
-                document.body.appendChild(mapTooltip);
-            }
-            
-            // Hole Daten für dieses Bundesland
-            const data = getDataForBundesland(bundeslandName);
-            
-            mapTooltip.innerHTML = `
-                <strong>📍 ${bundeslandName}</strong><br>
-                👥 Gesamtkunden: ${data.total}<br>
-                👁️  VISION User: ${data.vision}<br>
-                🔍 SCANNING User: ${data.scanning}
-            `;
-            mapTooltip.style.display = 'block';
-            updateMapTooltip(e);
+
+        function handleBundeslandOut() {
+            hoveredBundesland = null;
+            updateGeoMapColors();
         }
-        
-        function updateMapTooltip(e) {
-            if (mapTooltip) {
-                mapTooltip.style.left = (e.clientX + 15) + 'px';
-                mapTooltip.style.top = (e.clientY + 15) + 'px';
-            }
-        }
-        
-        function hideMapTooltip() {
-            if (mapTooltip) {
-                mapTooltip.style.display = 'none';
-            }
-        }
-        
-        // Hole Daten für ein Bundesland
+
         function getDataForBundesland(bundeslandName) {
-            let total = 0;
-            let vision = 0;
-            let scanning = 0;
-            
-            filteredData.forEach(customer => {
-                const bundesland = getBundeslandByPLZ(customer['PLZ']);
-                if (bundesland === bundeslandName) {
-                    total++;
-                    if (customer['Vision'] === 'ja') vision++;
-                    if (customer['Scanning'] === 'ja') scanning++;
-                }
-            });
-            
-            return { total, vision, scanning };
+            const normalized = normalizeBundeslandName(bundeslandName);
+            const data = latestBundeslandStats[normalized];
+            if (data) {
+                return { ...data };
+            }
+            return { total: 0, vision: 0, scanning: 0 };
         }
-        
-        // Aktualisiere die Farben der Karte basierend auf Kundenzahlen
+
         function updateGeoMapColors() {
-            const bundeslandData = {};
-            
-            // Sammle Daten für jedes Bundesland
-            filteredData.forEach(customer => {
-                const bundesland = getBundeslandByPLZ(customer['PLZ']);
-                if (bundesland) {
-                    if (!bundeslandData[bundesland]) {
-                        bundeslandData[bundesland] = { total: 0, vision: 0, scanning: 0 };
-                    }
-                    bundeslandData[bundesland].total++;
-                    if (customer['Vision'] === 'ja') bundeslandData[bundesland].vision++;
-                    if (customer['Scanning'] === 'ja') bundeslandData[bundesland].scanning++;
-                }
-            });
-            
-            // Setze Farben für alle Bundesländer
-            document.querySelectorAll('.bundesland').forEach(path => {
-                const name = path.getAttribute('data-name');
-                const data = bundeslandData[name] || { total: 0 };
-                const value = data.total;
-                
-                // Bestimme Farbe basierend auf Kundenzahl
-                let color;
-                if (value === 0) color = 'rgba(226, 232, 240, 0.5)';
-                else if (value <= 5) color = 'rgba(167, 139, 250, 0.5)';
-                else if (value <= 10) color = 'rgba(139, 92, 246, 0.65)';
-                else if (value <= 20) color = 'rgba(124, 58, 237, 0.8)';
-                else if (value <= 50) color = 'rgba(109, 40, 217, 0.9)';
-                else color = 'rgba(91, 33, 182, 1)';
-                
-                path.style.fill = color;
-            });
-            
-            // Update die Legende
-            updateMapLegend(bundeslandData);
-        }
-        
-        // Dynamische Legende aktualisieren
-        function updateMapLegend(bundeslandData) {
-            const legendContainer = document.getElementById('mapLegend');
-            if (!legendContainer) return;
-            
-            // Sammle alle Werte
-            const values = Object.values(bundeslandData).map(d => d.total).filter(v => v > 0);
-            
-            if (values.length === 0) {
-                legendContainer.innerHTML = `
-                    <div style="display: flex; align-items: center; gap: 6px; font-size: 11px;">
-                        <div style="width: 15px; height: 15px; background: rgba(226, 232, 240, 0.5); border: 1px solid #fff;"></div>
-                        <span>Keine Kundendaten</span>
-                    </div>
-                `;
+            updateMapLegend(latestBundeslandStats, hoveredBundesland);
+
+            if (!bundeslaenderLayer) {
                 return;
             }
-            
-            const maxValue = Math.max(...values);
-            const legendItems = [];
-            
-            // Immer "Keine Kunden" anzeigen
-            legendItems.push({
-                label: 'Keine Kunden',
-                color: 'rgba(226, 232, 240, 0.5)'
+
+            bundeslaenderLayer.eachLayer(layer => {
+                const name = getFeatureBundeslandName(layer.feature);
+                const stats = latestBundeslandStats[name] || { total: 0 };
+                const isHovered = hoveredBundesland && hoveredBundesland === name;
+
+                layer.setStyle({
+                    weight: isHovered ? 2.5 : 1.5,
+                    color: isHovered ? '#4c1d95' : '#ffffff',
+                    fillOpacity: isHovered ? 0.95 : (stats.total > 0 ? 0.85 : 0.6),
+                    fillColor: getChoroplethColor(stats.total)
+                });
+
+                if (isHovered && layer.bringToFront) {
+                    layer.bringToFront();
+                }
             });
-            
-            // Dynamisch Bereiche basierend auf maxValue
+        }
+
+        function computeLegendBuckets(values) {
+            const base = [{ label: 'Keine Kunden', color: 'rgba(226, 232, 240, 0.8)' }];
+            if (!values || values.length === 0) {
+                bundeslandLegendCache = { buckets: base, maxValue: 0 };
+                return bundeslandLegendCache;
+            }
+
+            const maxValue = Math.max(...values);
+            const buckets = [...base];
+
             if (maxValue <= 10) {
-                legendItems.push({ label: '1-5 Kunden', color: 'rgba(167, 139, 250, 0.5)' });
+                buckets.push({ label: '1-5 Kunden', color: 'rgba(167, 139, 250, 0.65)' });
                 if (maxValue > 5) {
-                    legendItems.push({ label: '6-10 Kunden', color: 'rgba(139, 92, 246, 0.65)' });
+                    buckets.push({ label: '6-10 Kunden', color: 'rgba(139, 92, 246, 0.75)' });
                 }
             } else if (maxValue <= 50) {
-                legendItems.push({ label: '1-5 Kunden', color: 'rgba(167, 139, 250, 0.5)' });
-                legendItems.push({ label: '6-10 Kunden', color: 'rgba(139, 92, 246, 0.65)' });
+                buckets.push({ label: '1-5 Kunden', color: 'rgba(167, 139, 250, 0.65)' });
+                buckets.push({ label: '6-10 Kunden', color: 'rgba(139, 92, 246, 0.75)' });
                 if (maxValue > 10) {
-                    legendItems.push({ label: '11-20 Kunden', color: 'rgba(124, 58, 237, 0.8)' });
+                    buckets.push({ label: '11-20 Kunden', color: 'rgba(124, 58, 237, 0.85)' });
                 }
                 if (maxValue > 20) {
-                    legendItems.push({ label: '21-50 Kunden', color: 'rgba(109, 40, 217, 0.9)' });
+                    buckets.push({ label: '21-50 Kunden', color: 'rgba(109, 40, 217, 0.9)' });
                 }
             } else {
-                legendItems.push({ label: '1-5 Kunden', color: 'rgba(167, 139, 250, 0.5)' });
-                legendItems.push({ label: '6-10 Kunden', color: 'rgba(139, 92, 246, 0.65)' });
-                legendItems.push({ label: '11-20 Kunden', color: 'rgba(124, 58, 237, 0.8)' });
-                legendItems.push({ label: '21-50 Kunden', color: 'rgba(109, 40, 217, 0.9)' });
-                legendItems.push({ label: '50+ Kunden', color: 'rgba(91, 33, 182, 1)' });
+                buckets.push({ label: '1-5 Kunden', color: 'rgba(167, 139, 250, 0.65)' });
+                buckets.push({ label: '6-10 Kunden', color: 'rgba(139, 92, 246, 0.75)' });
+                buckets.push({ label: '11-20 Kunden', color: 'rgba(124, 58, 237, 0.85)' });
+                buckets.push({ label: '21-50 Kunden', color: 'rgba(109, 40, 217, 0.9)' });
+                buckets.push({ label: '50+ Kunden', color: 'rgba(91, 33, 182, 0.95)' });
             }
-            
-            legendContainer.innerHTML = legendItems.map(item => `
-                <div style="display: flex; align-items: center; gap: 6px; font-size: 11px; font-family: Inter;">
-                    <div style="width: 15px; height: 15px; background: ${item.color}; border: 1px solid #fff; border-radius: 2px;"></div>
+
+            bundeslandLegendCache = { buckets, maxValue };
+            return bundeslandLegendCache;
+        }
+
+        function updateMapLegend(bundeslandData = latestBundeslandStats, hoveredName = hoveredBundesland) {
+            const legendContainer = document.getElementById('mapLegend');
+            if (!legendContainer) return;
+
+            const values = Object.values(bundeslandData || {}).map(d => d.total).filter(v => v > 0);
+            const { buckets, maxValue } = computeLegendBuckets(values);
+
+            const scaleHtml = buckets.map(item => `
+                <div class="map-legend-item">
+                    <span class="map-legend-color" style="background: ${item.color};"></span>
                     <span>${item.label}</span>
                 </div>
             `).join('');
+
+            let infoHtml = '<div>Fahre über ein Bundesland, um Details zu sehen.</div>';
+            if (hoveredName && bundeslandData && bundeslandData[hoveredName]) {
+                const stats = bundeslandData[hoveredName];
+                infoHtml = `
+                    <div><strong>${escapeHtml(hoveredName)}</strong></div>
+                    <div>👥 ${stats.total} Kunden</div>
+                    <div>👁️ ${stats.vision} Vision Nutzer</div>
+                    <div>🔍 ${stats.scanning} Scanning Nutzer</div>
+                `;
+            } else if (maxValue === 0) {
+                infoHtml = '<div>Keine Kundendaten verfügbar.</div>';
+            }
+
+            legendContainer.innerHTML = `
+                <div class="map-legend-scale">${scaleHtml || '<div class="text-xs text-gray-400">Keine Kundendaten</div>'}</div>
+                <div class="map-legend-info">${infoHtml}</div>
+            `;
         }
         
         // Initialisiere Balkendiagramm für Geo-Analyse
@@ -3630,12 +3725,15 @@
         function updateGeoChart() {
             // Aggregiere nach Bundesland
             const bundeslandData = {};
+            ALL_BUNDESLAENDER.forEach(bl => {
+                bundeslandData[bl] = { total: 0, vision: 0, scanning: 0 };
+            });
             let totalVision = 0;
             let totalScanning = 0;
-            
+
             // Zähle ALLE Kunden und kategorisiere sie
             filteredData.forEach(customer => {
-                const bundesland = getBundeslandByPLZ(customer['PLZ']);
+                const bundesland = getCustomerBundesland(customer);
                 if (bundesland) {
                     // Initialisiere Bundesland-Eintrag falls nicht vorhanden
                     if (!bundeslandData[bundesland]) {
@@ -3662,15 +3760,19 @@
                     }
                 }
             });
+
+            latestBundeslandStats = bundeslandData;
+            initializeGeoMapChart();
             
             // Berechne Gesamt-Statistiken
             const totalCustomers = filteredData.length;
-            const activeBundeslaender = Object.keys(bundeslandData).length;
+            const activeBundeslaender = Object.values(bundeslandData).filter(entry => entry.total > 0).length;
             const visionRate = totalCustomers > 0 ? ((totalVision / totalCustomers) * 100).toFixed(1) : 0;
             const scanningRate = totalCustomers > 0 ? ((totalScanning / totalCustomers) * 100).toFixed(1) : 0;
             
             // Finde Top Bundesland
             const sortedBundeslaender = Object.entries(bundeslandData)
+                .filter(([, data]) => data.total > 0)
                 .sort((a, b) => b[1].total - a[1].total);
             const topBundesland = sortedBundeslaender.length > 0 ? sortedBundeslaender[0] : null;
             
@@ -3687,7 +3789,7 @@
             // Update Bundesland Ranking Liste
             updateBundeslandRankingList(sortedBundeslaender);
             
-            // Update SVG-Karte
+            // Update Leaflet-Karte
             updateGeoMapColors();
         }
         
@@ -3727,7 +3829,8 @@
                 const percentage = maxCount > 0 ? (data.total / maxCount) * 100 : 0;
                 const visionRate = data.total > 0 ? ((data.vision / data.total) * 100).toFixed(0) : 0;
                 const scanningRate = data.total > 0 ? ((data.scanning / data.total) * 100).toFixed(0) : 0;
-                
+                const safeBundesland = escapeHtml(bundesland);
+
                 // Rank Badge Klasse
                 let rankClass = 'rank-other';
                 let rankIcon = '';
@@ -3741,17 +3844,17 @@
                     rankClass = 'rank-3';
                     rankIcon = '<i class="fas fa-award ml-1"></i>';
                 }
-                
+
                 return `
-                    <div class="bundesland-item" onclick="selectBundesland('${bundesland}')" data-bundesland="${bundesland}">
+                    <div class="bundesland-item" onclick="selectBundesland('${bundesland}')" data-bundesland="${safeBundesland}">
                         <div class="flex items-start justify-between mb-2">
                             <div class="flex items-center gap-3">
                                 <span class="bundesland-rank ${rankClass}">${rank}${rankIcon}</span>
-                                <span class="bundesland-name">${bundesland}</span>
+                                <span class="bundesland-name">${safeBundesland}</span>
                             </div>
                             <span class="text-2xl font-bold text-purple-600">${data.total}</span>
                         </div>
-                        
+
                         <div class="progress-bar-container">
                             <div class="progress-bar" style="width: ${percentage}%"></div>
                         </div>
@@ -3779,6 +3882,7 @@
         
         // Bundesland auswählen und filtern
         function selectBundesland(bundesland) {
+            const normalizedBundesland = normalizeBundeslandName(bundesland);
             // Setze den (versteckten) Filter
             const filterSelect = document.getElementById('bundeslandFilter');
             if (!filterSelect) {
@@ -3788,31 +3892,31 @@
                 select.style.display = 'none';
                 select.innerHTML = '<option value="all">Alle Bundesländer</option>';
                 
-                const bundeslaender = [
-                    'Baden-Württemberg', 'Bayern', 'Berlin', 'Brandenburg', 'Bremen',
-                    'Hamburg', 'Hessen', 'Mecklenburg-Vorpommern', 'Niedersachsen', 
-                    'Nordrhein-Westfalen', 'Rheinland-Pfalz', 'Saarland', 'Sachsen', 
-                    'Sachsen-Anhalt', 'Schleswig-Holstein', 'Thüringen'
-                ];
-                bundeslaender.forEach(bl => {
+                ALL_BUNDESLAENDER.forEach(bl => {
                     const option = document.createElement('option');
                     option.value = bl;
                     option.textContent = bl;
                     select.appendChild(option);
                 });
-                
+
                 document.body.appendChild(select);
             }
-            
+
             const filterElement = document.getElementById('bundeslandFilter');
-            filterElement.value = bundesland;
-            
+            if (!Array.from(filterElement.options).some(opt => opt.value === normalizedBundesland)) {
+                const option = document.createElement('option');
+                option.value = normalizedBundesland;
+                option.textContent = normalizedBundesland;
+                filterElement.appendChild(option);
+            }
+            filterElement.value = normalizedBundesland;
+
             // NEU: Setze Spezialfilter für Filterbar-Anzeige
             activeSpecialFilter = {
                 type: 'bundesland',
-                value: bundesland
+                value: normalizedBundesland
             };
-            
+
             // Trigger Filter
             applyFilters();
             updateActiveFilterBar(); // NEU: Update die Filterbar
@@ -3821,7 +3925,7 @@
             document.querySelector('[data-tab="customers"]').click();
             
             // Zeige Toast Notification
-            showToast(`🗺️ Gefiltert nach: ${bundesland}`, 'info');
+            showToast(`🗺️ Gefiltert nach: ${normalizedBundesland}`, 'info');
         }
         
         // Bundesland-Liste filtern (Suchfunktion)
@@ -4226,6 +4330,7 @@
             document.getElementById('leadStatusBerechnetFilter').addEventListener('change', applyFilters);
             document.getElementById('leadFilter').addEventListener('change', applyFilters);
             document.getElementById('upsellStatusFilter').addEventListener('change', applyFilters);
+            document.getElementById('bundeslandFilter').addEventListener('change', applyFilters);
 
             // 4. Event Listener für Text-Gründe-Filter
             // *** GEÄNDERT: Ruft jetzt applyFilters auf, damit die Liste neu gefiltert wird ***
@@ -4391,6 +4496,11 @@
                     // Update Geo-Charts when switching to geo tab
                     if (targetTab === 'geo') {
                         updateGeoChart();
+                        setTimeout(() => {
+                            if (leafletMap) {
+                                leafletMap.invalidateSize();
+                            }
+                        }, 200);
                     }
                 });
             });
@@ -4449,7 +4559,7 @@
                 
                 // Bundesland filter
                 if (bundesland !== 'all' && match) {
-                    const customerBundesland = getBundeslandByPLZ(customer['PLZ']);
+                    const customerBundesland = getCustomerBundesland(customer);
                     match = customerBundesland === bundesland;
                 }
 
@@ -5400,7 +5510,8 @@
                 // Spalten-Konfiguration
                 const readOnlyCols = [
                     'Firma', 'Mailadresse', 'Lead Score (berechnet)', 'Lead Status (berechnet)',
-                    'Gekaufte Module', 'Letzte Änderung', 'Demo nach PowerHour', 'Kauf nach PowerHour'
+                    'Gekaufte Module', 'Letzte Änderung', 'Demo nach PowerHour', 'Kauf nach PowerHour',
+                    'PLZ', 'Bundesland'
                 ];
                 const dateCols = ['Letzter Anruf am:', 'Wann erneuter Kontakt?'];
                 const selectCols = [
@@ -5628,7 +5739,7 @@
             originalHeaders.forEach(header => {
                 // Firma, PLZ und andere ReadOnly-Felder überspringen
                 // WICHTIG: PLZ wird nicht gespeichert, da sie aus der Online-Validierung kommt
-                if (header === 'Firma' || header === 'Gekaufte Module' || header === 'PLZ') return; 
+                if (header === 'Firma' || header === 'Gekaufte Module' || header === 'PLZ' || header === 'Bundesland') return;
 
                 const id = slugify(header);
                 const element = document.getElementById(id);
